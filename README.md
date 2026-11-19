@@ -22,43 +22,50 @@ Lazada One, Singapore: [Aliexpress by RRG](https://proxgrind.aliexpress.com/stor
 
 Read the [available documentation](https://github.com/RfidResearchGroup/ChameleonUltra/wiki).
 
-## Slot 8 BLE iBeacon (30-byte legacy advertising)
+## Slot 8 BLE iBeacon (30-byte editable advertisement)
 
-This fork broadcasts a **standard 30-byte iBeacon advertising payload** using
-a dedicated lab UUID (`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`). The UUID is
-fixed in the firmware; the existing ChameleonUltraGUI controls the **Major**,
-**Minor**, and **measured power** fields through an NTAG213 dump in slot 8.
+This fork reads **all 30 bytes of a standard iBeacon legacy advertising packet**
+directly from the active NTAG213 dump in slot 8. No UUID, Major, Minor, or
+measured-power values are hardcoded into the transmitted advertisement.
+The existing ChameleonUltraGUI is sufficient; no GUI changes are required.
 
-In ChameleonUltraGUI, open **Slot Manager → Slot 8 → Settings**, choose
-**NTAG213** for HF, enable HF, then edit the HF dump's user pages 4–6:
+In ChameleonUltraGUI, open **Slot Manager → Slot 8 → Settings**, select
+**NTAG213** for HF, enable HF, and edit user pages **4 through 11** of the
+HF dump. For example, the following 30-byte beacon uses the lab UUID
+`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`, Major 1, Minor 2, and -59 dBm
+measured power:
 
-| NTAG213 page | Hex bytes | Meaning |
+| NTAG213 page | Four hex bytes | Contents |
 | --- | --- | --- |
-| 4 | `49 42 43 31` | ASCII `IBC1` marker (enables beacon mode) |
-| 5 | `00 01 00 02` | Major = 1, Minor = 2 (big-endian) |
-| 6 | `C5 00 00 00` | Measured power = -59 dBm (`C5`); reserved bytes must be zero |
+| 4 | `02 01 06 1A` | BLE flags + manufacturer AD length |
+| 5 | `FF 4C 00 02` | Manufacturer AD type + Apple company ID + beacon type |
+| 6 | `15 7C 9A 8F` | iBeacon length marker + UUID bytes 1-3 |
+| 7 | `42 3D E6 4A` | UUID bytes 4-7 |
+| 8 | `91 BD 75 2C` | UUID bytes 8-11 |
+| 9 | `61 F4 E8 90` | UUID bytes 12-15 |
+| 10 | `13 00 01 00` | UUID byte 16 + Major + first Minor byte |
+| 11 | `02 C5 00 00` | Last Minor byte + measured power + two zero padding bytes |
+
+The first **30 bytes** (pages 4-10 and the first two bytes of page 11) are
+broadcast **verbatim**. The last two bytes of page 11 must be `00 00`
+and are not broadcast. The first nine bytes must be the standard iBeacon
+framing `02 01 06 1A FF 4C 00 02 15`; malformed framing or nonzero
+padding disables beacon advertising. All remaining 21 bytes, including the
+full UUID, Major, Minor and measured power, are read from the GUI-edited
+dump, not from firmware constants.
 
 Save the dump, select slot 8, and wake the device with a button or USB.
-A BLE scanner that recognizes iBeacon should report the lab UUID, Major 1,
-Minor 2 and measured power -59 dBm. The complete 30-byte advertisement is:
+A BLE scanner should recognize the iBeacon with the values entered above.
+When disconnected, the single BLE advertising set alternates between normal
+connectable GUI discovery and nonconnectable iBeacon advertising every
+500 ms. When connected to the GUI, it transmits nonconnectable iBeacon
+advertisements about every 100 ms. Selecting another slot, disabling HF,
+or changing the standard iBeacon header stops beacon transmission; normal
+device sleep still applies.
 
-```text
-02 01 06
-1A FF 4C 00 02 15
-7C 9A 8F 42 3D E6 4A 91 BD 75 2C 61 F4 E8 90 13
-00 01 00 02 C5
-```
-
-This is **30 bytes of legacy advertising data**, including the 3-byte Flags
-field, not 30 bytes of arbitrary user data. iBeacon advertisements are
-nonconnectable. With no GUI connection, the single BLE advertising set
-alternates between connectable GUI discovery and the nonconnectable beacon
-every 500 ms. With the GUI connected, it transmits the beacon about every
-100 ms. Selecting another slot, disabling HF, or clearing the `IBC1` marker
-stops beacon transmission; normal device sleep still applies.
-
-This is a lab beacon, not a credential or authentication mechanism. The
-previous `LAB1` short-label Service Data format is not used by this version.
+**Note:** This is a standard iBeacon encoder, not an arbitrary 30-byte BLE
+advertising-data injector: the nine framing bytes must remain standard.
+The previous `IBC1` 12-byte slot format is no longer supported.
 
 # Compatible applications
 
