@@ -22,29 +22,43 @@ Lazada One, Singapore: [Aliexpress by RRG](https://proxgrind.aliexpress.com/stor
 
 Read the [available documentation](https://github.com/RfidResearchGroup/ChameleonUltra/wiki).
 
-## Slot 8 BLE label
+## Slot 8 BLE iBeacon (30-byte legacy advertising)
 
-This fork can broadcast a short text label from the active NTAG213 in slot 8.
-In ChameleonUltraGUI, open **Slot Manager → Slot 8 → Settings**, select
-**NTAG213** for HF, enable HF, and open the HF dump editor. Set pages 4–6 as
-shown below, then save and select slot 8.
+This fork broadcasts a **standard 30-byte iBeacon advertising payload** using
+a dedicated lab UUID (`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`). The UUID is
+fixed in the firmware; the existing ChameleonUltraGUI controls the **Major**,
+**Minor**, and **measured power** fields through an NTAG213 dump in slot 8.
+
+In ChameleonUltraGUI, open **Slot Manager → Slot 8 → Settings**, choose
+**NTAG213** for HF, enable HF, then edit the HF dump's user pages 4–6:
 
 | NTAG213 page | Hex bytes | Meaning |
 | --- | --- | --- |
-| 4 | `4C 41 42 31` | The `LAB1` marker enables the label format |
-| 5 | `43 4D 2D 4C` | First four characters of `CM-LAB` |
-| 6 | `41 42 00 00` | Remaining characters and zero padding |
+| 4 | `49 42 43 31` | ASCII `IBC1` marker (enables beacon mode) |
+| 5 | `00 01 00 02` | Major = 1, Minor = 2 (big-endian) |
+| 6 | `C5 00 00 00` | Measured power = -59 dBm (`C5`); reserved bytes must be zero |
 
-Use 1–8 printable ASCII characters, padding shorter labels with zero bytes.
-Wake the device with a button or connect USB. In a BLE scanner, open the
-**Service Data (128-bit UUID)** field for
-`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`. The example payload is
-`43 4D 2D 4C 41 42` (`CM-LAB`). Select another slot or clear page 4 to stop
-the label. Normal device sleep also stops transmission.
+Save the dump, select slot 8, and wake the device with a button or USB.
+A BLE scanner that recognizes iBeacon should report the lab UUID, Major 1,
+Minor 2 and measured power -59 dBm. The complete 30-byte advertisement is:
 
-While disconnected, the device alternates the GUI discovery packet and the
-label packet every half second. Both accept a GUI connection. With the GUI
-connected, a second scanner can still receive the label about every 100 ms.
+```text
+02 01 06
+1A FF 4C 00 02 15
+7C 9A 8F 42 3D E6 4A 91 BD 75 2C 61 F4 E8 90 13
+00 01 00 02 C5
+```
+
+This is **30 bytes of legacy advertising data**, including the 3-byte Flags
+field, not 30 bytes of arbitrary user data. iBeacon advertisements are
+nonconnectable. With no GUI connection, the single BLE advertising set
+alternates between connectable GUI discovery and the nonconnectable beacon
+every 500 ms. With the GUI connected, it transmits the beacon about every
+100 ms. Selecting another slot, disabling HF, or clearing the `IBC1` marker
+stops beacon transmission; normal device sleep still applies.
+
+This is a lab beacon, not a credential or authentication mechanism. The
+previous `LAB1` short-label Service Data format is not used by this version.
 
 # Compatible applications
 
