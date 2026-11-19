@@ -3,7 +3,8 @@
 
 #include <stdbool.h>
 
-// Only the user-visible eighth slot is allowed to advertise over BLE.
+// The ordinary BLE UART/GUI discovery service stays available on slots 1-7.
+// Slot 8 replaces GUI discovery with a nonconnectable iBeacon when configured.
 typedef enum {
     ADV_OFF,
     ADV_GUI,
@@ -15,19 +16,14 @@ static inline advertising_phase_t slot_ble_next_phase(advertising_phase_t curren
                                                       bool slot8_selected,
                                                       bool beacon_valid,
                                                       bool elapsed) {
-    if (!slot8_selected) {
-        return ADV_OFF;  // Stop all BLE advertising, including GUI discovery.
+    (void)current;
+    (void)elapsed;
+    if (slot8_selected && beacon_valid) {
+        return ADV_SLOT_BEACON;
     }
-    if (connected) {
-        return beacon_valid ? ADV_SLOT_BEACON : ADV_OFF;
-    }
-    if (!beacon_valid || current == ADV_OFF) {
-        return ADV_GUI;  // Keep the GUI discoverable on slot 8 during setup.
-    }
-    if (!elapsed) {
-        return current;
-    }
-    return current == ADV_GUI ? ADV_SLOT_BEACON : ADV_GUI;
+    // When slot 8 has no valid beacon, GUI discovery remains available for
+    // configuration. Connected BLE links do not need connectable advertising.
+    return connected ? ADV_OFF : ADV_GUI;
 }
 
 #endif

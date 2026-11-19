@@ -56,22 +56,24 @@ dump, not from firmware constants.
 
 Save the dump, select slot 8, and wake the device with a button or USB.
 A BLE scanner should recognize the iBeacon with the values entered above.
-**All BLE advertising is gated by the selected slot:**
-- **Slot 8:** normal connectable GUI discovery is allowed, even when the
-  NTAG213 beacon data is not configured yet. With a valid beacon, the single
-  advertising set alternates between GUI discovery and nonconnectable
-  iBeacon advertising every 500 ms while disconnected. During a GUI
-  connection, the nonconnectable beacon is sent about every 100 ms.
-- **Slots 1-7:** both iBeacon and normal GUI discovery advertising stop.
-  Switching away from slot 8 stops advertising at the next main-loop update,
-  without waiting for the 500 ms rotation. An existing BLE connection is not
-  forcibly disconnected, but no new BLE connection can be initiated until
-  slot 8 is selected again. Use the physical buttons or USB to switch slots
-  if the device is not currently advertising.
 
-Disabling HF or changing the standard iBeacon header stops iBeacon
-transmission, but normal GUI discovery remains available on slot 8.
-Normal device sleep still applies.
+**BLE advertising follows the selected slot:**
+- **Slots 1-7:** retain the normal, connectable ChameleonUltraGUI discovery
+  advertisement. No iBeacon is transmitted on these slots.
+- **Slot 8 with valid iBeacon data:** transmit only the nonconnectable
+  30-byte iBeacon advertisement. The ordinary connectable GUI discovery
+  advertisement is replaced while this slot is selected.
+- **Slot 8 without valid iBeacon data:** fall back to normal GUI discovery
+  so the user can configure the NTAG213 dump over BLE.
+
+Switching slots changes the advertising mode on the next main-loop update,
+without waiting for a 500 ms rotation. Existing BLE connections are not
+forcibly disconnected. A GUI already connected on another slot may remain
+connected while slot 8 is selected; the beacon can be advertised alongside
+that existing connection. New GUI connections cannot be initiated while
+slot 8 is broadcasting a valid nonconnectable beacon. To reconnect, select
+a slot from 1-7 or clear the invalid/unconfigured beacon data. Normal device
+sleep still applies.
 
 **Note:** This is a standard iBeacon encoder, not an arbitrary 30-byte BLE
 advertising-data injector: the nine framing bytes must remain standard.
