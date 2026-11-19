@@ -1192,6 +1192,9 @@ int main(void) {
         while (NRF_LOG_PROCESS());
         // USB event process
         while (app_usbd_event_queue_process());
+        uint8_t slot_label[SLOT_LABEL_MAX_LENGTH];
+        size_t slot_label_length = tag_emulation_get_slot_label(slot_label);
+        advertising_update_slot_label(slot_label, slot_label_length);
         // WDT refresh
         bsp_wdt_feed();
         // No task to process, system sleep enter.

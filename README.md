@@ -22,6 +22,30 @@ Lazada One, Singapore: [Aliexpress by RRG](https://proxgrind.aliexpress.com/stor
 
 Read the [available documentation](https://github.com/RfidResearchGroup/ChameleonUltra/wiki).
 
+## Slot 8 BLE label
+
+This fork can broadcast a short text label from the active NTAG213 in slot 8.
+In ChameleonUltraGUI, open **Slot Manager → Slot 8 → Settings**, select
+**NTAG213** for HF, enable HF, and open the HF dump editor. Set pages 4–6 as
+shown below, then save and select slot 8.
+
+| NTAG213 page | Hex bytes | Meaning |
+| --- | --- | --- |
+| 4 | `4C 41 42 31` | The `LAB1` marker enables the label format |
+| 5 | `43 4D 2D 4C` | First four characters of `CM-LAB` |
+| 6 | `41 42 00 00` | Remaining characters and zero padding |
+
+Use 1–8 printable ASCII characters, padding shorter labels with zero bytes.
+Wake the device with a button or connect USB. In a BLE scanner, open the
+**Service Data (128-bit UUID)** field for
+`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`. The example payload is
+`43 4D 2D 4C 41 42` (`CM-LAB`). Select another slot or clear page 4 to stop
+the label. Normal device sleep also stops transmission.
+
+While disconnected, the device alternates the GUI discovery packet and the
+label packet every half second. Both accept a GUI connection. With the GUI
+connected, a second scanner can still receive the label about every 100 ms.
+
 # Compatible applications
 
 * [ChameleonUltraGUI](https://github.com/GameTec-live/ChameleonUltraGUI)

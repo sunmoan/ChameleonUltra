@@ -23,6 +23,7 @@
 #include "dataframe.h"
 #include "hw_connect.h"
 #include "settings.h"
+#include "slot_label.h"
 
 #define NRF_LOG_MODULE_NAME ble_main
 #include "nrf_log.h"
@@ -53,6 +54,9 @@ NRF_LOG_MODULE_REGISTER();
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
 #define APP_ADV_INTERVAL                64                                          /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+
+#define SLOT_ADV_WINDOW_TICKS           APP_TIMER_TICKS(500)
+#define SLOT_ADV_INTERVAL               MSEC_TO_UNITS(100, UNIT_0_625_MS)
 
 #define MIN_CONN_INTERVAL               MSEC_TO_UNITS(20, UNIT_1_25_MS)             /**< Minimum acceptable connection interval (20 ms), Connection interval uses 1.25 ms units. */
 #define MAX_CONN_INTERVAL               MSEC_TO_UNITS(75, UNIT_1_25_MS)             /**< Maximum acceptable connection interval (75 ms), Connection interval uses 1.25 ms units. */
@@ -103,6 +107,39 @@ static ble_uuid_t m_adv_uuids[]          =                                      
 volatile bool g_is_ble_connected = false;
 volatile bool g_is_low_battery_shutdown = false;
 static ble_opt_t m_static_pin_option;
+
+// All advertising-set changes are made by the main loop. BLE events can arrive in an IRQ.
+typedef enum {
+    ADV_OFF,
+    ADV_GUI,
+    ADV_SLOT_CONNECTABLE,
+    ADV_SLOT_BROADCAST,
+} advertising_phase_t;
+
+static advertising_phase_t m_adv_phase;
+static volatile bool m_advertising_requested;
+static volatile uint32_t m_connection_count;
+static uint32_t m_adv_connection_count;
+static uint32_t m_adv_phase_started;
+static ret_code_t m_adv_last_error;
+static advertising_phase_t m_adv_retry_phase;
+
+// AD type 0x21 followed by 7c9a8f42-3de6-4a91-bd75-2c61f4e89013 in BLE byte order.
+static const uint8_t m_slot_service_header[] = {
+    BLE_GAP_AD_TYPE_SERVICE_DATA_128BIT_UUID,
+    0x13, 0x90, 0xe8, 0xf4, 0x61, 0x2c, 0x75, 0xbd,
+    0x91, 0x4a, 0xe6, 0x3d, 0x42, 0x8f, 0x9a, 0x7c,
+};
+
+typedef struct {
+    uint8_t flags[3];
+    uint8_t service[1 + sizeof(m_slot_service_header) + SLOT_LABEL_MAX_LENGTH];
+    uint8_t name[2 + sizeof(DEVICE_NAME_STR) - 1];
+} slot_adv_buffer_t;
+
+// The SoftDevice retains these RAM buffers until advertising stops or the data changes.
+static slot_adv_buffer_t m_slot_buffers[2];
+static unsigned m_slot_buffer_index;
 
 // Simple function to provide an index to the next input buffer
 // Will simply alernate between 0 and 1 when SAADC_BUF_COUNT is 2
@@ -434,6 +471,7 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context) {
             err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             APP_ERROR_CHECK(err_code);
             g_is_ble_connected = true;
+            m_connection_count++;
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
@@ -569,6 +607,8 @@ static void advertising_init(void) {
     init.config.ble_adv_fast_enabled  = true;
     init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;
     init.config.ble_adv_fast_timeout  = 0;
+    // The main loop restores GUI advertising after releasing any active slot broadcast.
+    init.config.ble_adv_on_disconnect_disabled = true;
     init.evt_handler = on_adv_evt;
 
     err_code = ble_advertising_init(&m_advertising, &init);
@@ -613,23 +653,140 @@ void advertising_start(bool erase_bonds) {
         // So we don't call `ble_advertising_start()` after `delete_bonds_all()`.
         delete_bonds_all();
     } else {
-        // The only peripheral link is in use, advertising restarts when it disconnects
-        if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
-            return;
-        }
-        if (settings_get_ble_pairing_enable_first_load()) {
+        if (settings_get_ble_pairing_enable_first_load() && !g_is_ble_connected) {
             whitelist_set(PM_PEER_ID_LIST_SKIP_NO_ID_ADDR);
         }
-        ret_code_t ret = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
-        APP_ERROR_CHECK(ret);
+        m_advertising_requested = true;
     }
 }
 
-/**
- * @brief Function for stop advertising.
- */
+static void stop_advertising_set(void) {
+    if (m_adv_phase != ADV_OFF) {
+        ret_code_t err = sd_ble_gap_adv_stop(m_advertising.adv_handle);
+        // A new GUI connection automatically stops connectable advertising.
+        if (err != NRF_ERROR_INVALID_STATE) {
+            APP_ERROR_CHECK(err);
+        }
+        m_adv_phase = ADV_OFF;
+    }
+}
+
 void advertising_stop(void) {
-    sd_ble_gap_adv_stop(m_advertising.adv_handle);
+    m_advertising_requested = false;
+    stop_advertising_set();
+    m_adv_last_error = NRF_SUCCESS;
+}
+
+static advertising_phase_t next_advertising_phase(bool connected, size_t length, bool elapsed) {
+    if (connected) {
+        return length ? ADV_SLOT_BROADCAST : ADV_OFF;
+    }
+    if (!length || m_adv_phase == ADV_OFF || m_adv_phase == ADV_SLOT_BROADCAST) {
+        return ADV_GUI;
+    }
+    if (!elapsed) {
+        return m_adv_phase;
+    }
+    return m_adv_phase == ADV_GUI ? ADV_SLOT_CONNECTABLE : ADV_GUI;
+}
+
+static ret_code_t configure_slot_advertising(const uint8_t *label, size_t length, bool broadcast) {
+    const unsigned next = 1 - m_slot_buffer_index;
+    slot_adv_buffer_t *buf = &m_slot_buffers[next];
+    buf->flags[0] = 2;
+    buf->flags[1] = BLE_GAP_AD_TYPE_FLAGS;
+    buf->flags[2] = broadcast ? BLE_GAP_ADV_FLAG_BR_EDR_NOT_SUPPORTED : BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
+    buf->service[0] = sizeof(m_slot_service_header) + length;
+    memcpy(&buf->service[1], m_slot_service_header, sizeof(m_slot_service_header));
+    memcpy(&buf->service[1 + sizeof(m_slot_service_header)], label, length);
+    ble_gap_adv_data_t data = {
+        .adv_data = { .p_data = (uint8_t *)buf, .len = sizeof(buf->flags) + 1 + buf->service[0] },
+    };
+    if (!broadcast) {
+        buf->name[0] = sizeof(buf->name) - 1;
+        buf->name[1] = BLE_GAP_AD_TYPE_COMPLETE_LOCAL_NAME;
+        memcpy(&buf->name[2], DEVICE_NAME_STR, sizeof(DEVICE_NAME_STR) - 1);
+        data.scan_rsp_data.p_data = buf->name;
+        data.scan_rsp_data.len = sizeof(buf->name);
+    }
+
+    const ble_gap_adv_params_t params = {
+        .properties.type = BLE_GAP_ADV_TYPE_NONCONNECTABLE_NONSCANNABLE_UNDIRECTED,
+        .primary_phy = BLE_GAP_PHY_1MBPS,
+        .interval = SLOT_ADV_INTERVAL,
+    };
+    // While already advertising, update data without changing the advertising type.
+    bool start_broadcast = broadcast && m_adv_phase == ADV_OFF;
+    ret_code_t err = sd_ble_gap_adv_set_configure(&m_advertising.adv_handle, &data,
+                                                  start_broadcast ? &params : NULL);
+    if (err == NRF_SUCCESS) {
+        m_slot_buffer_index = next;
+        if (start_broadcast) {
+            err = sd_ble_gap_adv_start(m_advertising.adv_handle, APP_BLE_CONN_CFG_TAG);
+        }
+    }
+    return err;
+}
+
+void advertising_update_slot_label(const uint8_t *label, size_t length) {
+    if (!m_advertising_requested) {
+        return; // In particular, waking from an RF field does not enable BLE.
+    }
+    if (!label || length > SLOT_LABEL_MAX_LENGTH) {
+        length = 0;
+    }
+
+    uint32_t count = m_connection_count;
+    if (count != m_adv_connection_count) {
+        // This also catches a connection and disconnection between main-loop iterations.
+        if (m_adv_phase == ADV_GUI || m_adv_phase == ADV_SLOT_CONNECTABLE) {
+            m_adv_phase = ADV_OFF;
+        }
+        m_adv_connection_count = count;
+        m_adv_last_error = NRF_SUCCESS;
+    }
+    uint32_t now = app_timer_cnt_get();
+    bool elapsed = app_timer_cnt_diff_compute(now, m_adv_phase_started) >= SLOT_ADV_WINDOW_TICKS;
+    advertising_phase_t desired = next_advertising_phase(g_is_ble_connected, length, elapsed);
+    if (m_adv_last_error != NRF_SUCCESS && desired == m_adv_retry_phase && !elapsed) {
+        return;
+    }
+    if (desired == m_adv_phase) {
+        if (desired == ADV_OFF || desired == ADV_GUI) {
+            return;
+        }
+        const uint8_t *service = m_slot_buffers[m_slot_buffer_index].service;
+        if (service[0] == sizeof(m_slot_service_header) + length &&
+                memcmp(service + 1 + sizeof(m_slot_service_header), label, length) == 0) {
+            return;
+        }
+    }
+
+    // Changing connectability requires a stopped set. GUI/slot alternation only changes data.
+    if (desired == ADV_OFF || (m_adv_phase != desired &&
+            (m_adv_phase == ADV_SLOT_BROADCAST || desired == ADV_SLOT_BROADCAST))) {
+        stop_advertising_set();
+    }
+    ret_code_t err = NRF_SUCCESS;
+    if (desired == ADV_GUI) {
+        if (m_adv_phase == ADV_OFF) {
+            err = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
+        } else {
+            err = sd_ble_gap_adv_set_configure(&m_advertising.adv_handle, &m_advertising.adv_data, NULL);
+        }
+    } else if (desired != ADV_OFF) {
+        err = configure_slot_advertising(label, length, desired == ADV_SLOT_BROADCAST);
+    }
+    if (err != NRF_SUCCESS || m_adv_phase != desired) {
+        m_adv_phase_started = now;
+    }
+    if (err == NRF_SUCCESS) {
+        m_adv_phase = desired;
+    } else if (err != m_adv_last_error) {
+        NRF_LOG_WARNING("Advertising change failed: 0x%x", err);
+    }
+    m_adv_last_error = err;
+    m_adv_retry_phase = desired;
 }
 
 /**@brief Function for handling Peer Manager events.

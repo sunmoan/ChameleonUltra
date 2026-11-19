@@ -1,5 +1,6 @@
 #include "tag_emulation.h"
 
+#include "app_util_platform.h"
 #include "crc_utils.h"
 #include "fds_ids.h"
 #include "fds_util.h"
@@ -58,6 +59,11 @@ static tag_data_buffer_t m_tag_data_lf = {sizeof(m_tag_data_buffer_lf), m_tag_da
 static uint8_t m_tag_data_buffer_hf[4500];  // HF card data buffer
 static uint16_t m_tag_data_hf_crc;
 static tag_data_buffer_t m_tag_data_hf = {sizeof(m_tag_data_buffer_hf), m_tag_data_buffer_hf, &m_tag_data_hf_crc};
+
+/* User-visible slot 8, starting at NTAG213 user page 4. */
+#define LABEL_SLOT_INDEX 7
+#define LABEL_RECORD_OFFSET (offsetof(nfc_tag_mf0_ntag_information_t, memory) + 4 * NFC_TAG_MF0_NTAG_DATA_SIZE)
+static bool m_slot_label_loaded;
 
 /**
  * Eight card slots, each card slot has its own unique configuration
@@ -230,6 +236,10 @@ static void load_data_by_tag_type(uint8_t slot, tag_specific_type_t tag_type) {
 
     tag_sense_type_t sense_type = get_sense_type_from_tag_type(tag_type);
 
+    if (sense_type == TAG_SENSE_HF) {
+        m_slot_label_loaded = false;
+    }
+
     // get fds record for the card slot
     fds_slot_record_map_t map_info;
     get_fds_map_by_slot_sense_type_for_dump(slot, sense_type, &map_info);
@@ -245,6 +255,9 @@ static void load_data_by_tag_type(uint8_t slot, tag_specific_type_t tag_type) {
     }
     ret = tag_emulation_load_by_buffer(tag_type, true);
     if (ret) {
+        if (slot == LABEL_SLOT_INDEX && tag_type == TAG_TYPE_NTAG_213) {
+            m_slot_label_loaded = length >= LABEL_RECORD_OFFSET + sizeof(slot_label_record_t);
+        }
         NRF_LOG_INFO("load tag data in slot %d, type %d done.", slot, tag_type);
     }
 }
@@ -578,6 +591,20 @@ uint8_t tag_emulation_get_slot(void) {
     return slotConfig.active_slot;
 }
 
+size_t tag_emulation_get_slot_label(uint8_t label[SLOT_LABEL_MAX_LENGTH]) {
+    if (!m_slot_label_loaded || slotConfig.active_slot != LABEL_SLOT_INDEX ||
+            !slotConfig.slots[LABEL_SLOT_INDEX].enabled_hf ||
+            slotConfig.slots[LABEL_SLOT_INDEX].tag_hf != TAG_TYPE_NTAG_213) {
+        return 0;
+    }
+    slot_label_record_t record;
+    /* An NFC write can interrupt the main loop and change the active pages. */
+    CRITICAL_REGION_ENTER();
+    memcpy(&record, m_tag_data_buffer_hf + LABEL_RECORD_OFFSET, sizeof(record));
+    CRITICAL_REGION_EXIT();
+    return slot_label_decode(&record, label);
+}
+
 /**
  * Set the currently activated card slot index
  */
@@ -683,7 +710,7 @@ void tag_emulation_change_type(uint8_t slot, tag_specific_type_t tag_type) {
     }
     NRF_LOG_INFO("tag type = %d", tag_type);
     // After the update is completed, we need to notify the relevant data in the update of the memory
-    if (sense_type != TAG_SENSE_NO) {
+    if (sense_type != TAG_SENSE_NO && slot == slotConfig.active_slot) {
         load_data_by_tag_type(slot, tag_type);
         NRF_LOG_INFO("reload data success.");
     }
