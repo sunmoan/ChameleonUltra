@@ -24,6 +24,7 @@
 #include "hw_connect.h"
 #include "settings.h"
 #include "slot_ibeacon.h"
+#include "slot_ble_policy.h"
 
 #define NRF_LOG_MODULE_NAME ble_main
 #include "nrf_log.h"
@@ -109,12 +110,6 @@ volatile bool g_is_low_battery_shutdown = false;
 static ble_opt_t m_static_pin_option;
 
 // All advertising-set changes are made by the main loop. BLE events can arrive in an IRQ.
-typedef enum {
-    ADV_OFF,
-    ADV_GUI,
-    ADV_SLOT_BEACON,
-} advertising_phase_t;
-
 static advertising_phase_t m_adv_phase;
 static volatile bool m_advertising_requested;
 static volatile uint32_t m_connection_count;
@@ -664,19 +659,6 @@ void advertising_stop(void) {
     m_adv_last_error = NRF_SUCCESS;
 }
 
-static advertising_phase_t next_advertising_phase(bool connected, bool beacon_valid, bool elapsed) {
-    if (connected) {
-        return beacon_valid ? ADV_SLOT_BEACON : ADV_OFF;
-    }
-    if (!beacon_valid || m_adv_phase == ADV_OFF) {
-        return ADV_GUI;
-    }
-    if (!elapsed) {
-        return m_adv_phase;
-    }
-    return m_adv_phase == ADV_GUI ? ADV_SLOT_BEACON : ADV_GUI;
-}
-
 static ret_code_t configure_slot_advertising(const uint8_t *advertising_data, bool start) {
     const unsigned next = 1 - m_slot_buffer_index;
     uint8_t *buf = m_slot_buffers[next];
@@ -704,11 +686,12 @@ static ret_code_t configure_slot_advertising(const uint8_t *advertising_data, bo
     return err;
 }
 
-void advertising_update_slot_ibeacon(const uint8_t *advertising_data, size_t length) {
+void advertising_update_slot_ibeacon(bool slot8_selected, const uint8_t *advertising_data, size_t length) {
     if (!m_advertising_requested) {
         return; // In particular, waking from an RF field does not enable BLE.
     }
-    const bool beacon_valid = advertising_data != NULL && length == SLOT_IBEACON_ADV_LENGTH;
+    const bool beacon_valid = slot8_selected && advertising_data != NULL &&
+                              length == SLOT_IBEACON_ADV_LENGTH;
 
     uint32_t count = m_connection_count;
     if (count != m_adv_connection_count) {
@@ -721,7 +704,8 @@ void advertising_update_slot_ibeacon(const uint8_t *advertising_data, size_t len
     }
     uint32_t now = app_timer_cnt_get();
     bool elapsed = app_timer_cnt_diff_compute(now, m_adv_phase_started) >= SLOT_ADV_WINDOW_TICKS;
-    advertising_phase_t desired = next_advertising_phase(g_is_ble_connected, beacon_valid, elapsed);
+    advertising_phase_t desired = slot_ble_next_phase(m_adv_phase, g_is_ble_connected,
+                                                     slot8_selected, beacon_valid, elapsed);
     if (m_adv_last_error != NRF_SUCCESS && desired == m_adv_retry_phase && !elapsed) {
         return;
     }

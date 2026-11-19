@@ -61,7 +61,6 @@ static uint16_t m_tag_data_hf_crc;
 static tag_data_buffer_t m_tag_data_hf = {sizeof(m_tag_data_buffer_hf), m_tag_data_buffer_hf, &m_tag_data_hf_crc};
 
 /* User-visible slot 8, starting at NTAG213 user page 4. */
-#define IBEACON_SLOT_INDEX 7
 #define IBEACON_RECORD_OFFSET (offsetof(nfc_tag_mf0_ntag_information_t, memory) + 4 * NFC_TAG_MF0_NTAG_DATA_SIZE)
 static bool m_slot_ibeacon_loaded;
 
@@ -213,7 +212,7 @@ bool tag_emulation_load_by_buffer(tag_specific_type_t tag_type, bool update_crc)
 
     int length = loader(tag_type, buffer);
     // Also update the slot-8 beacon state when the GUI replaces an active dump.
-    if (tag_type == TAG_TYPE_NTAG_213 && slotConfig.active_slot == IBEACON_SLOT_INDEX) {
+    if (tag_type == TAG_TYPE_NTAG_213 && slotConfig.active_slot == TAG_IBEACON_SLOT_INDEX) {
         m_slot_ibeacon_loaded = length > 0 &&
             (size_t)length >= IBEACON_RECORD_OFFSET + sizeof(slot_ibeacon_record_t);
     }
@@ -260,7 +259,7 @@ static void load_data_by_tag_type(uint8_t slot, tag_specific_type_t tag_type) {
     }
     ret = tag_emulation_load_by_buffer(tag_type, true);
     if (ret) {
-        if (slot == IBEACON_SLOT_INDEX && tag_type == TAG_TYPE_NTAG_213) {
+        if (slot == TAG_IBEACON_SLOT_INDEX && tag_type == TAG_TYPE_NTAG_213) {
             m_slot_ibeacon_loaded = length >= IBEACON_RECORD_OFFSET + sizeof(slot_ibeacon_record_t);
         }
         NRF_LOG_INFO("load tag data in slot %d, type %d done.", slot, tag_type);
@@ -597,9 +596,9 @@ uint8_t tag_emulation_get_slot(void) {
 }
 
 bool tag_emulation_get_slot_ibeacon(uint8_t advertising_data[SLOT_IBEACON_ADV_LENGTH]) {
-    if (!m_slot_ibeacon_loaded || slotConfig.active_slot != IBEACON_SLOT_INDEX ||
-            !slotConfig.slots[IBEACON_SLOT_INDEX].enabled_hf ||
-            slotConfig.slots[IBEACON_SLOT_INDEX].tag_hf != TAG_TYPE_NTAG_213) {
+    if (!m_slot_ibeacon_loaded || slotConfig.active_slot != TAG_IBEACON_SLOT_INDEX ||
+            !slotConfig.slots[TAG_IBEACON_SLOT_INDEX].enabled_hf ||
+            slotConfig.slots[TAG_IBEACON_SLOT_INDEX].tag_hf != TAG_TYPE_NTAG_213) {
         return false;
     }
     slot_ibeacon_record_t record;

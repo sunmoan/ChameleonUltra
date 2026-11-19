@@ -12,6 +12,7 @@
 
 // Up to eight card slots
 #define TAG_MAX_SLOT_NUM 8
+#define TAG_IBEACON_SLOT_INDEX (TAG_MAX_SLOT_NUM - 1U)
 
 extern bool g_is_tag_emulating;
 

@@ -56,12 +56,22 @@ dump, not from firmware constants.
 
 Save the dump, select slot 8, and wake the device with a button or USB.
 A BLE scanner should recognize the iBeacon with the values entered above.
-When disconnected, the single BLE advertising set alternates between normal
-connectable GUI discovery and nonconnectable iBeacon advertising every
-500 ms. When connected to the GUI, it transmits nonconnectable iBeacon
-advertisements about every 100 ms. Selecting another slot, disabling HF,
-or changing the standard iBeacon header stops beacon transmission; normal
-device sleep still applies.
+**All BLE advertising is gated by the selected slot:**
+- **Slot 8:** normal connectable GUI discovery is allowed, even when the
+  NTAG213 beacon data is not configured yet. With a valid beacon, the single
+  advertising set alternates between GUI discovery and nonconnectable
+  iBeacon advertising every 500 ms while disconnected. During a GUI
+  connection, the nonconnectable beacon is sent about every 100 ms.
+- **Slots 1-7:** both iBeacon and normal GUI discovery advertising stop.
+  Switching away from slot 8 stops advertising at the next main-loop update,
+  without waiting for the 500 ms rotation. An existing BLE connection is not
+  forcibly disconnected, but no new BLE connection can be initiated until
+  slot 8 is selected again. Use the physical buttons or USB to switch slots
+  if the device is not currently advertising.
+
+Disabling HF or changing the standard iBeacon header stops iBeacon
+transmission, but normal GUI discovery remains available on slot 8.
+Normal device sleep still applies.
 
 **Note:** This is a standard iBeacon encoder, not an arbitrary 30-byte BLE
 advertising-data injector: the nine framing bytes must remain standard.
