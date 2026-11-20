@@ -79,6 +79,50 @@ sleep still applies.
 advertising-data injector: the nine framing bytes must remain standard.
 The previous `IBC1` 12-byte slot format is no longer supported.
 
+## Mac USB lab beacon controls
+
+The existing NFC commands already work over USB CDC with ChameleonUltraGUI,
+`chameleon-ultra.js` or the official CLI: select NFC slots, read/write
+NTAG213 dumps and configure emulation without a separate Mac NFC adapter.
+
+The firmware also supports three **USB-only** lab beacon commands:
+
+| Command | ID | Request | Response |
+| --- | ---: | --- | --- |
+| `LAB_BLE_SET` | 1044 | 5 bytes: Major (big-endian u16), Minor (big-endian u16), measured power (signed i8) | empty |
+| `LAB_BLE_GET` | 1045 | empty | 6 bytes: enabled (u8), the above five fields |
+| `LAB_BLE_CLEAR` | 1046 | empty | empty |
+
+They are accepted only from the **USB CDC transport**, not a BLE NUS
+connection. USB mode **never accepts arbitrary advertising bytes or UUIDs**.
+All 30 on-air bytes use a fixed educational UUID
+`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`, plus the chosen Major/Minor/
+measured-power values. The override lives in RAM only (until cleared or
+rebooted); the NTAG213 dump and normal NFC reader/emulator features are
+unchanged.
+
+**Slot behavior:** slots 1–7 retain normal connectable GUI advertising.
+When slot 8 is selected, the lab USB override takes priority over any
+stored NTAG213 beacon. `LAB_BLE_CLEAR` restores the NFC-stored beacon.
+If no valid beacon is configured, slot 8 falls back to normal GUI discovery.
+The normal wake/sleep and USB power behavior still applies.
+
+Mac Python CLI (`pyserial` required):
+
+```bash
+python3 -m pip install pyserial
+python3 tools/chameleon_usb_lab_beacon.py list-ports
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX status
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX set --major 1 --minor 2 --power -59 --activate-slot8
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX clear
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX slot --select 1
+```
+
+The CLI uses the standard Chameleon Ultra USB frame protocol and does not
+replace macOS's system Bluetooth controller. Device firmware must contain
+these commands; stock firmware will respond with an unsupported-command
+status.
+
 # Compatible applications
 
 * [ChameleonUltraGUI](https://github.com/GameTec-live/ChameleonUltraGUI)

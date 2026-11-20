@@ -13,7 +13,9 @@ typedef struct {
     uint16_t length;
 } data_frame_tx_t;
 
-void data_frame_receive(uint8_t *data, uint16_t length);
+void data_frame_receive(uint8_t *data, uint16_t length); /* BLE NUS transport */
+void data_frame_receive_usb(uint8_t *data, uint16_t length); /* USB CDC transport */
+bool data_frame_is_usb_source(void); /* True only when the completed command arrived via USB */
 void data_frame_process(void);
 void on_data_frame_complete(data_frame_cbk_t callback);
 

@@ -25,6 +25,7 @@
 #include "settings.h"
 #include "slot_ibeacon.h"
 #include "slot_ble_policy.h"
+#include "slot_lab_beacon.h"
 
 #define NRF_LOG_MODULE_NAME ble_main
 #include "nrf_log.h"
@@ -122,6 +123,11 @@ static advertising_phase_t m_adv_retry_phase;
 // Each buffer is exactly the 30-byte legacy iBeacon advertisement (including flags).
 static uint8_t m_slot_buffers[2][SLOT_IBEACON_ADV_LENGTH];
 static unsigned m_slot_buffer_index;
+
+/* RAM-only USB test override. Original NTAG213 data is never changed. */
+static bool m_usb_lab_beacon_enabled;
+static uint8_t m_usb_lab_beacon_fields[SLOT_LAB_BEACON_FIELDS_LENGTH];
+static uint8_t m_usb_lab_beacon_adv[SLOT_LAB_BEACON_ADV_LENGTH];
 
 // Simple function to provide an index to the next input buffer
 // Will simply alernate between 0 and 1 when SAADC_BUF_COUNT is 2
@@ -686,9 +692,44 @@ static ret_code_t configure_slot_advertising(const uint8_t *advertising_data, bo
     return err;
 }
 
+/* The lab UUID is fixed at compile-time: arbitrary UUID/raw advertising
+ * injection is deliberately not exposed through the USB command protocol. */
+bool ble_usb_lab_beacon_set(const uint8_t fields[5]) {
+    if (fields == NULL) {
+        return false;
+    }
+    int8_t measured_power = (int8_t)fields[4];
+    if (measured_power < -127 || measured_power > 20) {
+        return false;
+    }
+    memcpy(m_usb_lab_beacon_fields, fields, SLOT_LAB_BEACON_FIELDS_LENGTH);
+    slot_lab_beacon_build(m_usb_lab_beacon_adv, m_usb_lab_beacon_fields);
+    m_usb_lab_beacon_enabled = true;
+    return true;
+}
+
+void ble_usb_lab_beacon_clear(void) {
+    m_usb_lab_beacon_enabled = false;
+    memset(m_usb_lab_beacon_fields, 0, sizeof(m_usb_lab_beacon_fields));
+}
+
+void ble_usb_lab_beacon_get(uint8_t status[6]) {
+    if (status == NULL) {
+        return;
+    }
+    status[0] = m_usb_lab_beacon_enabled ? 1 : 0;
+    memcpy(status + 1, m_usb_lab_beacon_fields, SLOT_LAB_BEACON_FIELDS_LENGTH);
+}
+
 void advertising_update_slot_ibeacon(bool slot8_selected, const uint8_t *advertising_data, size_t length) {
     if (!m_advertising_requested) {
         return; // In particular, waking from an RF field does not enable BLE.
+    }
+    // The USB override only applies on NFC slot 8; every other slot keeps
+    // normal connectable GUI advertising. No tag pages or Flash are modified.
+    if (slot8_selected && m_usb_lab_beacon_enabled) {
+        advertising_data = m_usb_lab_beacon_adv;
+        length = SLOT_LAB_BEACON_ADV_LENGTH;
     }
     const bool beacon_valid = slot8_selected && advertising_data != NULL &&
                               length == SLOT_IBEACON_ADV_LENGTH;

@@ -15,6 +15,10 @@ void ble_slave_init(void);
 void advertising_start(bool erase_bonds);
 void advertising_stop(void);
 void advertising_update_slot_ibeacon(bool slot8_selected, const uint8_t *advertising_data, size_t length);
+/* USB-only lab controls: 5 bytes are Major (2), Minor (2), Measured Power (1). */
+bool ble_usb_lab_beacon_set(const uint8_t fields[5]);
+void ble_usb_lab_beacon_clear(void);
+void ble_usb_lab_beacon_get(uint8_t status[6]);
 void delete_bonds_all(void);
 void nus_data_response(uint8_t *p_data, uint16_t length);
 bool is_nus_working(void);

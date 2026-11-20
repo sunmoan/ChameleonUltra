@@ -3,6 +3,7 @@ All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
 ## [unreleased][unreleased]
+ - Added USB CDC-only commands to control a RAM-only lab iBeacon override (fixed test UUID; Major/Minor/RSSI editable) without touching NFC tag pages.
  - Added full 30-byte iBeacon packet editing through NTAG213 slot 8 pages 4-11 in the existing GUI.
  - Preserve ordinary GUI BLE discovery on slots 1-7; replace it with nonconnectable iBeacon advertising on configured slot 8.
  - Fix reset when BLE bonds are deleted while connected (@mfcarroll)
