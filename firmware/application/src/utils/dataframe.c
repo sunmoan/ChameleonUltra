@@ -18,6 +18,7 @@ static uint16_t m_data_status;
 static uint16_t m_data_len;
 static uint8_t *m_data_buffer;
 static volatile bool m_data_completed = false;
+static bool m_rx_source_usb = false;
 static data_frame_cbk_t m_frame_process_cbk = NULL;
 
 static uint8_t compute_lrc(uint8_t *buf, uint16_t bufsize) {
@@ -91,10 +92,22 @@ void data_frame_reset(void) {
  * @param data: Receive byte array
  * @param length:The length of the receiving byte array
  */
-void data_frame_receive(uint8_t *data, uint16_t length) {
+static void data_frame_receive_from(uint8_t *data, uint16_t length, bool usb_source) {
     // buffer wait process
     if (m_data_completed) {
         NRF_LOG_ERROR("Data frame wait process.");
+        return;
+    }
+    if (length == 0) {
+        return;
+    }
+    // Preserve origin across USB CDC fragments and reject cross-transport
+    // interleaving. USB-only commands cannot be fabricated through BLE NUS.
+    if (m_data_rx_position == 0) {
+        m_rx_source_usb = usb_source;
+    } else if (m_rx_source_usb != usb_source) {
+        NRF_LOG_WARNING("Discarding mixed-transport data frame.");
+        data_frame_reset();
         return;
     }
     // buffer overflow
@@ -163,6 +176,18 @@ void data_frame_receive(uint8_t *data, uint16_t length) {
         // index update
         m_data_rx_position++;
     }
+}
+
+void data_frame_receive(uint8_t *data, uint16_t length) {
+    data_frame_receive_from(data, length, false);
+}
+
+void data_frame_receive_usb(uint8_t *data, uint16_t length) {
+    data_frame_receive_from(data, length, true);
+}
+
+bool data_frame_is_usb_source(void) {
+    return m_data_completed && m_rx_source_usb;
 }
 
 /**

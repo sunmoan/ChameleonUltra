@@ -1,5 +1,6 @@
 #include "tag_emulation.h"
 
+#include "app_util_platform.h"
 #include "crc_utils.h"
 #include "fds_ids.h"
 #include "fds_util.h"
@@ -58,6 +59,10 @@ static tag_data_buffer_t m_tag_data_lf = {sizeof(m_tag_data_buffer_lf), m_tag_da
 static uint8_t m_tag_data_buffer_hf[4500];  // HF card data buffer
 static uint16_t m_tag_data_hf_crc;
 static tag_data_buffer_t m_tag_data_hf = {sizeof(m_tag_data_buffer_hf), m_tag_data_buffer_hf, &m_tag_data_hf_crc};
+
+/* User-visible slot 8, starting at NTAG213 user page 4. */
+#define IBEACON_RECORD_OFFSET (offsetof(nfc_tag_mf0_ntag_information_t, memory) + 4 * NFC_TAG_MF0_NTAG_DATA_SIZE)
+static bool m_slot_ibeacon_loaded;
 
 /**
  * Eight card slots, each card slot has its own unique configuration
@@ -206,6 +211,11 @@ bool tag_emulation_load_by_buffer(tag_specific_type_t tag_type, bool update_crc)
     }
 
     int length = loader(tag_type, buffer);
+    // Also update the slot-8 beacon state when the GUI replaces an active dump.
+    if (tag_type == TAG_TYPE_NTAG_213 && slotConfig.active_slot == TAG_IBEACON_SLOT_INDEX) {
+        m_slot_ibeacon_loaded = length > 0 &&
+            (size_t)length >= IBEACON_RECORD_OFFSET + sizeof(slot_ibeacon_record_t);
+    }
     if (length > 0 && update_crc) {
         // afterReadingIsCompleted,WeCanSaveACrcOfTheCurrentDataWhenItIsStoredLater,ItCanBeUsedAsAReferenceForChangesComparison
         calc_14a_crc_lut(buffer->buffer, length, (uint8_t *)buffer->crc);
@@ -230,6 +240,10 @@ static void load_data_by_tag_type(uint8_t slot, tag_specific_type_t tag_type) {
 
     tag_sense_type_t sense_type = get_sense_type_from_tag_type(tag_type);
 
+    if (sense_type == TAG_SENSE_HF) {
+        m_slot_ibeacon_loaded = false;
+    }
+
     // get fds record for the card slot
     fds_slot_record_map_t map_info;
     get_fds_map_by_slot_sense_type_for_dump(slot, sense_type, &map_info);
@@ -245,6 +259,9 @@ static void load_data_by_tag_type(uint8_t slot, tag_specific_type_t tag_type) {
     }
     ret = tag_emulation_load_by_buffer(tag_type, true);
     if (ret) {
+        if (slot == TAG_IBEACON_SLOT_INDEX && tag_type == TAG_TYPE_NTAG_213) {
+            m_slot_ibeacon_loaded = length >= IBEACON_RECORD_OFFSET + sizeof(slot_ibeacon_record_t);
+        }
         NRF_LOG_INFO("load tag data in slot %d, type %d done.", slot, tag_type);
     }
 }
@@ -578,6 +595,20 @@ uint8_t tag_emulation_get_slot(void) {
     return slotConfig.active_slot;
 }
 
+bool tag_emulation_get_slot_ibeacon(uint8_t advertising_data[SLOT_IBEACON_ADV_LENGTH]) {
+    if (!m_slot_ibeacon_loaded || slotConfig.active_slot != TAG_IBEACON_SLOT_INDEX ||
+            !slotConfig.slots[TAG_IBEACON_SLOT_INDEX].enabled_hf ||
+            slotConfig.slots[TAG_IBEACON_SLOT_INDEX].tag_hf != TAG_TYPE_NTAG_213) {
+        return false;
+    }
+    slot_ibeacon_record_t record;
+    /* An NFC write can interrupt the main loop and change the active pages. */
+    CRITICAL_REGION_ENTER();
+    memcpy(&record, m_tag_data_buffer_hf + IBEACON_RECORD_OFFSET, sizeof(record));
+    CRITICAL_REGION_EXIT();
+    return slot_ibeacon_encode(&record, advertising_data);
+}
+
 /**
  * Set the currently activated card slot index
  */
@@ -683,7 +714,7 @@ void tag_emulation_change_type(uint8_t slot, tag_specific_type_t tag_type) {
     }
     NRF_LOG_INFO("tag type = %d", tag_type);
     // After the update is completed, we need to notify the relevant data in the update of the memory
-    if (sense_type != TAG_SENSE_NO) {
+    if (sense_type != TAG_SENSE_NO && slot == slotConfig.active_slot) {
         load_data_by_tag_type(slot, tag_type);
         NRF_LOG_INFO("reload data success.");
     }

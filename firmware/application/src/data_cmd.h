@@ -51,6 +51,10 @@
 #define DATA_CMD_GET_LONG_PRESS_THRESHOLD       (1041)
 #define DATA_CMD_SET_LONG_PRESS_THRESHOLD       (1042)
 #define DATA_CMD_GET_BATTERY_INFO_EX            (1043)
+/* USB CDC only: RAM-only lab iBeacon override with a firmware-fixed test UUID. */
+#define DATA_CMD_LAB_BLE_SET                   (1044)
+#define DATA_CMD_LAB_BLE_GET                   (1045)
+#define DATA_CMD_LAB_BLE_CLEAR                 (1046)
 
 //
 // ******************************************************************

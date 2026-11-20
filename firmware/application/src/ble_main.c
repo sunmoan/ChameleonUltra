@@ -23,6 +23,9 @@
 #include "dataframe.h"
 #include "hw_connect.h"
 #include "settings.h"
+#include "slot_ibeacon.h"
+#include "slot_ble_policy.h"
+#include "slot_lab_beacon.h"
 
 #define NRF_LOG_MODULE_NAME ble_main
 #include "nrf_log.h"
@@ -53,6 +56,9 @@ NRF_LOG_MODULE_REGISTER();
 
 #define APP_BLE_OBSERVER_PRIO           3                                           /**< Application's BLE observer priority. You shouldn't need to modify this value. */
 #define APP_ADV_INTERVAL                64                                          /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+
+#define SLOT_ADV_WINDOW_TICKS           APP_TIMER_TICKS(500)
+#define SLOT_ADV_INTERVAL               MSEC_TO_UNITS(100, UNIT_0_625_MS)
 
 #define MIN_CONN_INTERVAL               MSEC_TO_UNITS(20, UNIT_1_25_MS)             /**< Minimum acceptable connection interval (20 ms), Connection interval uses 1.25 ms units. */
 #define MAX_CONN_INTERVAL               MSEC_TO_UNITS(75, UNIT_1_25_MS)             /**< Maximum acceptable connection interval (75 ms), Connection interval uses 1.25 ms units. */
@@ -103,6 +109,25 @@ static ble_uuid_t m_adv_uuids[]          =                                      
 volatile bool g_is_ble_connected = false;
 volatile bool g_is_low_battery_shutdown = false;
 static ble_opt_t m_static_pin_option;
+
+// All advertising-set changes are made by the main loop. BLE events can arrive in an IRQ.
+static advertising_phase_t m_adv_phase;
+static volatile bool m_advertising_requested;
+static volatile uint32_t m_connection_count;
+static uint32_t m_adv_connection_count;
+static uint32_t m_adv_phase_started;
+static ret_code_t m_adv_last_error;
+static advertising_phase_t m_adv_retry_phase;
+
+// The SoftDevice retains these RAM buffers until advertising stops or the data changes.
+// Each buffer is exactly the 30-byte legacy iBeacon advertisement (including flags).
+static uint8_t m_slot_buffers[2][SLOT_IBEACON_ADV_LENGTH];
+static unsigned m_slot_buffer_index;
+
+/* RAM-only USB test override. Original NTAG213 data is never changed. */
+static bool m_usb_lab_beacon_enabled;
+static uint8_t m_usb_lab_beacon_fields[SLOT_LAB_BEACON_FIELDS_LENGTH];
+static uint8_t m_usb_lab_beacon_adv[SLOT_LAB_BEACON_ADV_LENGTH];
 
 // Simple function to provide an index to the next input buffer
 // Will simply alernate between 0 and 1 when SAADC_BUF_COUNT is 2
@@ -434,6 +459,7 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context) {
             err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             APP_ERROR_CHECK(err_code);
             g_is_ble_connected = true;
+            m_connection_count++;
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
@@ -569,6 +595,8 @@ static void advertising_init(void) {
     init.config.ble_adv_fast_enabled  = true;
     init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;
     init.config.ble_adv_fast_timeout  = 0;
+    // The main loop restores GUI advertising after releasing any active slot broadcast.
+    init.config.ble_adv_on_disconnect_disabled = true;
     init.evt_handler = on_adv_evt;
 
     err_code = ble_advertising_init(&m_advertising, &init);
@@ -613,23 +641,150 @@ void advertising_start(bool erase_bonds) {
         // So we don't call `ble_advertising_start()` after `delete_bonds_all()`.
         delete_bonds_all();
     } else {
-        // The only peripheral link is in use, advertising restarts when it disconnects
-        if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
-            return;
-        }
-        if (settings_get_ble_pairing_enable_first_load()) {
+        if (settings_get_ble_pairing_enable_first_load() && !g_is_ble_connected) {
             whitelist_set(PM_PEER_ID_LIST_SKIP_NO_ID_ADDR);
         }
-        ret_code_t ret = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
-        APP_ERROR_CHECK(ret);
+        m_advertising_requested = true;
     }
 }
 
-/**
- * @brief Function for stop advertising.
- */
+static void stop_advertising_set(void) {
+    if (m_adv_phase != ADV_OFF) {
+        ret_code_t err = sd_ble_gap_adv_stop(m_advertising.adv_handle);
+        // A new GUI connection automatically stops connectable advertising.
+        if (err != NRF_ERROR_INVALID_STATE) {
+            APP_ERROR_CHECK(err);
+        }
+        m_adv_phase = ADV_OFF;
+    }
+}
+
 void advertising_stop(void) {
-    sd_ble_gap_adv_stop(m_advertising.adv_handle);
+    m_advertising_requested = false;
+    stop_advertising_set();
+    m_adv_last_error = NRF_SUCCESS;
+}
+
+static ret_code_t configure_slot_advertising(const uint8_t *advertising_data, bool start) {
+    const unsigned next = 1 - m_slot_buffer_index;
+    uint8_t *buf = m_slot_buffers[next];
+    memcpy(buf, advertising_data, SLOT_IBEACON_ADV_LENGTH);
+
+    ble_gap_adv_data_t data = {
+        .adv_data = { .p_data = buf, .len = SLOT_IBEACON_ADV_LENGTH },
+    };
+    const ble_gap_adv_params_t params = {
+        .properties.type = BLE_GAP_ADV_TYPE_NONCONNECTABLE_NONSCANNABLE_UNDIRECTED,
+        .primary_phy = BLE_GAP_PHY_1MBPS,
+        .interval = SLOT_ADV_INTERVAL,
+    };
+
+    // Updating an active advertising set uses NULL params; starting a stopped
+    // set supplies the nonconnectable legacy advertising parameters.
+    ret_code_t err = sd_ble_gap_adv_set_configure(&m_advertising.adv_handle, &data,
+                                                  start ? &params : NULL);
+    if (err == NRF_SUCCESS) {
+        m_slot_buffer_index = next;
+        if (start) {
+            err = sd_ble_gap_adv_start(m_advertising.adv_handle, APP_BLE_CONN_CFG_TAG);
+        }
+    }
+    return err;
+}
+
+/* The lab UUID is fixed at compile-time: arbitrary UUID/raw advertising
+ * injection is deliberately not exposed through the USB command protocol. */
+bool ble_usb_lab_beacon_set(const uint8_t fields[5]) {
+    if (fields == NULL) {
+        return false;
+    }
+    int8_t measured_power = (int8_t)fields[4];
+    if (measured_power < -127 || measured_power > 20) {
+        return false;
+    }
+    memcpy(m_usb_lab_beacon_fields, fields, SLOT_LAB_BEACON_FIELDS_LENGTH);
+    slot_lab_beacon_build(m_usb_lab_beacon_adv, m_usb_lab_beacon_fields);
+    m_usb_lab_beacon_enabled = true;
+    return true;
+}
+
+void ble_usb_lab_beacon_clear(void) {
+    m_usb_lab_beacon_enabled = false;
+    memset(m_usb_lab_beacon_fields, 0, sizeof(m_usb_lab_beacon_fields));
+}
+
+void ble_usb_lab_beacon_get(uint8_t status[6]) {
+    if (status == NULL) {
+        return;
+    }
+    status[0] = m_usb_lab_beacon_enabled ? 1 : 0;
+    memcpy(status + 1, m_usb_lab_beacon_fields, SLOT_LAB_BEACON_FIELDS_LENGTH);
+}
+
+void advertising_update_slot_ibeacon(bool slot8_selected, const uint8_t *advertising_data, size_t length) {
+    if (!m_advertising_requested) {
+        return; // In particular, waking from an RF field does not enable BLE.
+    }
+    // The USB override only applies on NFC slot 8; every other slot keeps
+    // normal connectable GUI advertising. No tag pages or Flash are modified.
+    if (slot8_selected && m_usb_lab_beacon_enabled) {
+        advertising_data = m_usb_lab_beacon_adv;
+        length = SLOT_LAB_BEACON_ADV_LENGTH;
+    }
+    const bool beacon_valid = slot8_selected && advertising_data != NULL &&
+                              length == SLOT_IBEACON_ADV_LENGTH;
+
+    uint32_t count = m_connection_count;
+    if (count != m_adv_connection_count) {
+        // A new connection automatically stops the GUI's connectable advertising.
+        if (m_adv_phase == ADV_GUI) {
+            m_adv_phase = ADV_OFF;
+        }
+        m_adv_connection_count = count;
+        m_adv_last_error = NRF_SUCCESS;
+    }
+    uint32_t now = app_timer_cnt_get();
+    bool elapsed = app_timer_cnt_diff_compute(now, m_adv_phase_started) >= SLOT_ADV_WINDOW_TICKS;
+    advertising_phase_t desired = slot_ble_next_phase(m_adv_phase, g_is_ble_connected,
+                                                     slot8_selected, beacon_valid, elapsed);
+    if (m_adv_last_error != NRF_SUCCESS && desired == m_adv_retry_phase && !elapsed) {
+        return;
+    }
+    if (desired == m_adv_phase) {
+        if (desired == ADV_OFF || desired == ADV_GUI) {
+            return;
+        }
+        if (memcmp(m_slot_buffers[m_slot_buffer_index], advertising_data, SLOT_IBEACON_ADV_LENGTH) == 0) {
+            return;
+        }
+    }
+
+    // iBeacon is always nonconnectable. Stop the set when switching between
+    // normal connectable GUI discovery and iBeacon advertising.
+    if (desired == ADV_OFF || (m_adv_phase != desired &&
+            (m_adv_phase == ADV_SLOT_BEACON || desired == ADV_SLOT_BEACON))) {
+        stop_advertising_set();
+    }
+    ret_code_t err = NRF_SUCCESS;
+    if (desired == ADV_GUI) {
+        if (m_adv_phase == ADV_OFF) {
+            err = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
+        } else {
+            err = sd_ble_gap_adv_set_configure(&m_advertising.adv_handle, &m_advertising.adv_data, NULL);
+        }
+    } else if (desired == ADV_SLOT_BEACON) {
+        err = configure_slot_advertising(advertising_data, m_adv_phase == ADV_OFF);
+    }
+    if (err != NRF_SUCCESS || m_adv_phase != desired) {
+        m_adv_phase_started = now;
+    }
+    if (err == NRF_SUCCESS) {
+        m_adv_phase = desired;
+    } else if (err != m_adv_last_error) {
+        NRF_LOG_WARNING("Advertising change failed: 0x%x", err);
+    }
+    m_adv_last_error = err;
+    m_adv_retry_phase = desired;
 }
 
 /**@brief Function for handling Peer Manager events.

@@ -1192,6 +1192,12 @@ int main(void) {
         while (NRF_LOG_PROCESS());
         // USB event process
         while (app_usbd_event_queue_process());
+        bool slot8_selected = tag_emulation_get_slot() == TAG_IBEACON_SLOT_INDEX;
+        uint8_t slot_beacon[SLOT_IBEACON_ADV_LENGTH];
+        bool slot_beacon_valid = tag_emulation_get_slot_ibeacon(slot_beacon);
+        advertising_update_slot_ibeacon(slot8_selected,
+                                       slot_beacon_valid ? slot_beacon : NULL,
+                                       slot_beacon_valid ? sizeof(slot_beacon) : 0);
         // WDT refresh
         bsp_wdt_feed();
         // No task to process, system sleep enter.

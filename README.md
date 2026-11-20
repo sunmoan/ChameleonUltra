@@ -22,6 +22,107 @@ Lazada One, Singapore: [Aliexpress by RRG](https://proxgrind.aliexpress.com/stor
 
 Read the [available documentation](https://github.com/RfidResearchGroup/ChameleonUltra/wiki).
 
+## Slot 8 BLE iBeacon (30-byte editable advertisement)
+
+This fork reads **all 30 bytes of a standard iBeacon legacy advertising packet**
+directly from the active NTAG213 dump in slot 8. No UUID, Major, Minor, or
+measured-power values are hardcoded into the transmitted advertisement.
+The existing ChameleonUltraGUI is sufficient; no GUI changes are required.
+
+In ChameleonUltraGUI, open **Slot Manager → Slot 8 → Settings**, select
+**NTAG213** for HF, enable HF, and edit user pages **4 through 11** of the
+HF dump. For example, the following 30-byte beacon uses the lab UUID
+`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`, Major 1, Minor 2, and -59 dBm
+measured power:
+
+| NTAG213 page | Four hex bytes | Contents |
+| --- | --- | --- |
+| 4 | `02 01 06 1A` | BLE flags + manufacturer AD length |
+| 5 | `FF 4C 00 02` | Manufacturer AD type + Apple company ID + beacon type |
+| 6 | `15 7C 9A 8F` | iBeacon length marker + UUID bytes 1-3 |
+| 7 | `42 3D E6 4A` | UUID bytes 4-7 |
+| 8 | `91 BD 75 2C` | UUID bytes 8-11 |
+| 9 | `61 F4 E8 90` | UUID bytes 12-15 |
+| 10 | `13 00 01 00` | UUID byte 16 + Major + first Minor byte |
+| 11 | `02 C5 00 00` | Last Minor byte + measured power + two zero padding bytes |
+
+The first **30 bytes** (pages 4-10 and the first two bytes of page 11) are
+broadcast **verbatim**. The last two bytes of page 11 must be `00 00`
+and are not broadcast. The first nine bytes must be the standard iBeacon
+framing `02 01 06 1A FF 4C 00 02 15`; malformed framing or nonzero
+padding disables beacon advertising. All remaining 21 bytes, including the
+full UUID, Major, Minor and measured power, are read from the GUI-edited
+dump, not from firmware constants.
+
+Save the dump, select slot 8, and wake the device with a button or USB.
+A BLE scanner should recognize the iBeacon with the values entered above.
+
+**BLE advertising follows the selected slot:**
+- **Slots 1-7:** retain the normal, connectable ChameleonUltraGUI discovery
+  advertisement. No iBeacon is transmitted on these slots.
+- **Slot 8 with valid iBeacon data:** transmit only the nonconnectable
+  30-byte iBeacon advertisement. The ordinary connectable GUI discovery
+  advertisement is replaced while this slot is selected.
+- **Slot 8 without valid iBeacon data:** fall back to normal GUI discovery
+  so the user can configure the NTAG213 dump over BLE.
+
+Switching slots changes the advertising mode on the next main-loop update,
+without waiting for a 500 ms rotation. Existing BLE connections are not
+forcibly disconnected. A GUI already connected on another slot may remain
+connected while slot 8 is selected; the beacon can be advertised alongside
+that existing connection. New GUI connections cannot be initiated while
+slot 8 is broadcasting a valid nonconnectable beacon. To reconnect, select
+a slot from 1-7 or clear the invalid/unconfigured beacon data. Normal device
+sleep still applies.
+
+**Note:** This is a standard iBeacon encoder, not an arbitrary 30-byte BLE
+advertising-data injector: the nine framing bytes must remain standard.
+The previous `IBC1` 12-byte slot format is no longer supported.
+
+## Mac USB lab beacon controls
+
+The existing NFC commands already work over USB CDC with ChameleonUltraGUI,
+`chameleon-ultra.js` or the official CLI: select NFC slots, read/write
+NTAG213 dumps and configure emulation without a separate Mac NFC adapter.
+
+The firmware also supports three **USB-only** lab beacon commands:
+
+| Command | ID | Request | Response |
+| --- | ---: | --- | --- |
+| `LAB_BLE_SET` | 1044 | 5 bytes: Major (big-endian u16), Minor (big-endian u16), measured power (signed i8) | empty |
+| `LAB_BLE_GET` | 1045 | empty | 6 bytes: enabled (u8), the above five fields |
+| `LAB_BLE_CLEAR` | 1046 | empty | empty |
+
+They are accepted only from the **USB CDC transport**, not a BLE NUS
+connection. USB mode **never accepts arbitrary advertising bytes or UUIDs**.
+All 30 on-air bytes use a fixed educational UUID
+`7c9a8f42-3de6-4a91-bd75-2c61f4e89013`, plus the chosen Major/Minor/
+measured-power values. The override lives in RAM only (until cleared or
+rebooted); the NTAG213 dump and normal NFC reader/emulator features are
+unchanged.
+
+**Slot behavior:** slots 1–7 retain normal connectable GUI advertising.
+When slot 8 is selected, the lab USB override takes priority over any
+stored NTAG213 beacon. `LAB_BLE_CLEAR` restores the NFC-stored beacon.
+If no valid beacon is configured, slot 8 falls back to normal GUI discovery.
+The normal wake/sleep and USB power behavior still applies.
+
+Mac Python CLI (`pyserial` required):
+
+```bash
+python3 -m pip install pyserial
+python3 tools/chameleon_usb_lab_beacon.py list-ports
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX status
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX set --major 1 --minor 2 --power -59 --activate-slot8
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX clear
+python3 tools/chameleon_usb_lab_beacon.py --port /dev/cu.usbmodemXXXX slot --select 1
+```
+
+The CLI uses the standard Chameleon Ultra USB frame protocol and does not
+replace macOS's system Bluetooth controller. Device firmware must contain
+these commands; stock firmware will respond with an unsupported-command
+status.
+
 # Compatible applications
 
 * [ChameleonUltraGUI](https://github.com/GameTec-live/ChameleonUltraGUI)

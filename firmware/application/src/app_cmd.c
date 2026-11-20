@@ -3221,6 +3221,42 @@ static data_frame_tx_t *cmd_processor_hf14a_4_debug_counters(uint16_t cmd, uint1
     return data_frame_make(cmd, STATUS_SUCCESS, 4, buf);
 }
 #endif
+/* USB-only, ephemeral lab iBeacon control. Not reachable from BLE NUS.
+ * The test UUID is compile-time fixed; only Major, Minor and RSSI are editable.
+ * NFC slot data and its Flash persistence remain untouched. */
+static data_frame_tx_t *cmd_processor_lab_ble_set(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (!data_frame_is_usb_source() || !is_usb_working()) {
+        return data_frame_make(cmd, STATUS_DEVICE_MODE_ERROR, 0, NULL);
+    }
+    if (length != 5 || data == NULL || !ble_usb_lab_beacon_set(data)) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+    return data_frame_make(cmd, STATUS_SUCCESS, 0, NULL);
+}
+
+static data_frame_tx_t *cmd_processor_lab_ble_get(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (!data_frame_is_usb_source() || !is_usb_working()) {
+        return data_frame_make(cmd, STATUS_DEVICE_MODE_ERROR, 0, NULL);
+    }
+    if (length != 0) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+    uint8_t result[6];
+    ble_usb_lab_beacon_get(result);
+    return data_frame_make(cmd, STATUS_SUCCESS, sizeof(result), result);
+}
+
+static data_frame_tx_t *cmd_processor_lab_ble_clear(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (!data_frame_is_usb_source() || !is_usb_working()) {
+        return data_frame_make(cmd, STATUS_DEVICE_MODE_ERROR, 0, NULL);
+    }
+    if (length != 0) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+    ble_usb_lab_beacon_clear();
+    return data_frame_make(cmd, STATUS_SUCCESS, 0, NULL);
+}
+
 static cmd_data_map_t m_data_cmd_map[] = {
     {    DATA_CMD_GET_APP_VERSION,              NULL,                        cmd_processor_get_app_version,               NULL                   },
     {    DATA_CMD_CHANGE_DEVICE_MODE,           NULL,                        cmd_processor_change_device_mode,            NULL                   },
@@ -3265,6 +3301,9 @@ static cmd_data_map_t m_data_cmd_map[] = {
     {    DATA_CMD_GET_ALL_SLOT_NICKS,           NULL,                        cmd_processor_get_all_slot_nicks,            NULL                   },
     {    DATA_CMD_GET_LONG_PRESS_THRESHOLD,     NULL,                        cmd_processor_get_long_press_threshold,      NULL                   },
     {    DATA_CMD_SET_LONG_PRESS_THRESHOLD,     NULL,                        cmd_processor_set_long_press_threshold,      NULL                   },
+    {    DATA_CMD_LAB_BLE_SET,                  NULL,                        cmd_processor_lab_ble_set,                  NULL                   },
+    {    DATA_CMD_LAB_BLE_GET,                  NULL,                        cmd_processor_lab_ble_get,                  NULL                   },
+    {    DATA_CMD_LAB_BLE_CLEAR,                NULL,                        cmd_processor_lab_ble_clear,                NULL                   },
 
 #if defined(PROJECT_CHAMELEON_ULTRA)
 

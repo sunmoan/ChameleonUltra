@@ -6,11 +6,13 @@
 #include <stdio.h>
 
 #include "app_util.h"
+#include "slot_ibeacon.h"
 #include "tag_base_type.h"
 #include "utils.h"
 
 // Up to eight card slots
 #define TAG_MAX_SLOT_NUM 8
+#define TAG_IBEACON_SLOT_INDEX (TAG_MAX_SLOT_NUM - 1U)
 
 extern bool g_is_tag_emulating;
 
@@ -102,6 +104,7 @@ tag_data_buffer_t *get_buffer_by_tag_type(tag_specific_type_t type);
 void tag_emulation_set_slot(uint8_t index);
 // Get the card slot currently used
 uint8_t tag_emulation_get_slot(void);
+bool tag_emulation_get_slot_ibeacon(uint8_t advertising_data[SLOT_IBEACON_ADV_LENGTH]);
 // Switch the card slot to control whether the passing parameter control is closed during the switching period to listen to
 void tag_emulation_change_slot(uint8_t index, bool sense_disable);
 // Get the card slot to enable the state
